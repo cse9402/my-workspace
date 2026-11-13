@@ -150,6 +150,9 @@
     const h = lastExport()[it.id]; return !h ? 'never' : h.version === it.version ? 'same' : 'modified';
   };
   const isAndroid = () => MW.personal._forceAndroid || /Android/i.test(navigator.userAgent);
+  const gsyncOn = () => !!(st.gsync && st.gsync.clientId && st.gsync.lastSync);   // Google 동기화를 실제로 한 번 이상 한 기기
+  const autoAvail = () => isAndroid() && st.meta.deviceRole !== 'admin-pc';
+  const autoOn = () => autoAvail() && st.meta.autoPhone !== false;                // 휴대폰에서 새 일정 저장 시 휴대폰 캘린더로 보내기(기본 켜짐, 설정에서 끔)
   const onlineOk = () => /^https:$/.test(location.protocol) || /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
   /* 아직 휴대폰 캘린더에 넣지 않은 일정(오늘 이후 회차가 있는 것): 보낸 적 없음 + 보낸 뒤 수정됨 */
   function pendingPhone() {
@@ -249,14 +252,14 @@
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden && st.loaded) reloadAndRefresh(); });
   async function reloadAndRefresh() {   // 다른 탭(동기화 화면 등)에서 바뀐 내용 반영
-    try { st.items = await MW.pdb.all('items'); st.exports = await MW.pdb.all('exports'); } catch (_) { return; }
+    try { st.items = await MW.pdb.all('items'); st.exports = await MW.pdb.all('exports'); st.gsync = (await MW.pdb.get('meta', 'gsync')) || null; } catch (_) { return; }
     refreshView();
   }
   /* Google 캘린더 바로 추가: 링크를 열기만 하고, 사용자가 「저장했습니다」를 눌러야 보냄으로 기록 */
-  function quickAdd(cur) {
+  function quickAdd(cur, opened) {
     const url = C().gcalUrl(cur);
     MW.personal._lastLink = url;
-    if (!MW.personal._noNavigate) window.open(url, '_blank', 'noopener');
+    if (!opened && !MW.personal._noNavigate) window.open(url, '_blank', 'noopener');
     MW.ui.modal(`<h2>Google 캘린더에 추가</h2>
       <p>Google 캘린더 화면에서 <b>계정(개인 Google)</b>을 확인하고 <b>저장</b>을 누른 뒤 돌아와 주세요.</p>
       <p class="small muted">저장했는지는 앱이 알 수 없으므로, 아래 버튼을 눌러야 「보냄」으로 기록됩니다. 알림은 Google 캘린더 기본 알림이 적용됩니다.</p>
@@ -345,6 +348,8 @@
         <label class="row" style="font-weight:400"><input type="checkbox" id="pe-done" ${v.done ? 'checked' : ''}> 완료</label>
         ${it.origin === 'onenote' ? `<label class="row notice small" style="font-weight:400"><input type="checkbox" id="pe-expok" ${it.exportConfirmed ? 'checked' : ''}> 업무 자료가 아닌 개인 일정임을 확인했고, 휴대폰용 파일로 내보내도 됩니다.</label>` : ''}
       </div>
+      ${isNew && autoAvail() ? (gsyncOn() ? `<p class="small muted" id="pe-autonote" style="margin-top:12px">Google 동기화를 쓰고 있어, 저장 뒤 「Google 동기화」에서 「지금 동기화」를 누르면 휴대폰 캘린더에 들어갑니다.</p>`
+        : `<label class="row mbox small" style="font-weight:400;margin-top:12px"><input type="checkbox" id="pe-auto" ${autoOn() ? 'checked' : ''}> 저장하면 휴대폰 캘린더에도 추가(Google 캘린더 화면이 열림)</label>`) : ''}
       <div class="row" style="margin-top:14px"><button class="btn primary" id="pe-save">저장</button>${isNew ? '' : (occ ? '<button class="btn danger" id="pe-delone">이 회차만 삭제</button><button class="btn danger" id="pe-delall">반복 전체 삭제</button>' : '<button class="btn danger" id="pe-del">삭제</button>')}</div>
       ${isNew ? '' : `<details class="mbox" id="pe-phone" ${['never', 'modified'].includes(h) && st.meta.deviceRole !== 'admin-pc' ? 'open' : ''}><summary><b>휴대폰으로 보내기 · 공유</b> <span class="small muted">${h === 'never' ? '보낸 적 없음' : h === 'same' ? '보냄 ' + esc(MW.docs.fmt(hist.at)) : h === 'google' ? 'Google 동기화됨' : h === 'google-pending' ? 'Google 동기화 대기(다음 동기화 때 반영)' : '보낸 뒤 수정됨 — 다시 보내기 필요'}</span></summary>
         ${isAndroid() && st.meta.deviceRole !== 'admin-pc' ? `<div style="margin-top:8px"><button class="btn primary" id="pe-intent">Google 캘린더에 바로 추가</button>
@@ -455,9 +460,15 @@
         }
       }
       const warn = (occ && scope() === 'one') ? [] : C().warnings(it);
-      try { await save(it); } catch (e) { return showErr(['저장하지 못했습니다: ' + e.message + ' (입력한 내용은 창에 그대로 있습니다)']); }
+      /* 휴대폰 자동 추가: 버튼을 누른 그 순간에 열어야 브라우저가 막지 않으므로 저장 전에 Google 화면을 엶 */
+      const auto = isNew && $('pe-auto') && $('pe-auto').checked && !blocked(it);
+      let link = null;
+      if (auto) { link = C().gcalUrl(it); MW.personal._lastLink = link; if (!MW.personal._noNavigate) window.open(link, '_blank', 'noopener'); }
+      if (isNew && $('pe-auto') && (st.meta.autoPhone !== false) !== $('pe-auto').checked) { st.meta.autoPhone = $('pe-auto').checked; saveMeta().catch(() => {}); }
+      try { await save(it); } catch (e) { return showErr(['저장하지 못했습니다: ' + e.message + ' (입력한 내용은 창에 그대로 있습니다)' + (link ? ' — 열린 Google 화면에서는 저장하지 마세요.' : '')]); }
       MW.ui.closeModal(); MW.ui.toast((isNew ? '등록했습니다.' : '저장했습니다.') + (warn.length ? ' ' + warn[0] : ''));
       if (location.hash.startsWith('#/cal')) { if (isNew && it.start) { S.d = it.start; S.sel = it.start; } render(document.getElementById('view'), { q: { v: S.v } }); } else MW.app.refreshSoon();
+      if (link) quickAdd(st.items.find(x => x.id === it.id) || it, true);
     };
     const del = async (mode) => {
       if (mode === 'one') { it.exdates = [...new Set((it.exdates || []).concat(arg.orig))]; if (it.overrides) delete it.overrides[arg.orig]; }
@@ -567,6 +578,7 @@
     return `<section class="card" id="pc-settings"><h2>개인 일정</h2>
       <p class="small muted">개인 일정은 업무 자료와 <b>다른 저장소</b>에 있으며 백업 파일도 따로 만듭니다. PC와 휴대폰의 일정은 서로 동기화되지 않습니다.</p>
       <div class="form"><label for="ps-role">이 기기</label><select id="ps-role"><option value="">정하지 않음</option><option value="admin-pc" ${st.meta.deviceRole === 'admin-pc' ? 'selected' : ''}>행정 PC</option><option value="personal" ${st.meta.deviceRole === 'personal' ? 'selected' : ''}>개인 휴대폰·PC</option></select>
+        <label for="ps-auto">휴대폰 자동 추가</label><label class="row" style="font-weight:400"><input type="checkbox" id="ps-auto" ${st.meta.autoPhone !== false ? 'checked' : ''}> 휴대폰에서 새 일정을 저장하면 휴대폰 캘린더에도 추가(Google 캘린더 화면이 열림 · 안드로이드 개인 기기만)</label>
         <label for="ps-only">업무 메뉴</label><label class="row" style="font-weight:400"><input type="checkbox" id="ps-only" ${MW.state.settings.personalOnly ? 'checked' : ''}> 개인 일정 전용으로 쓰기(업무 메뉴 숨김 · 휴대폰용)</label></div>
       <div class="row" style="margin-top:10px"><button class="btn primary" id="ps-export">개인 일정 백업 내보내기</button><label class="btn" for="ps-restore" style="display:inline-flex;align-items:center">개인 일정 백업에서 복원</label><input id="ps-restore" type="file" accept=".json" hidden><button class="btn danger" id="ps-wipe">개인 일정 모두 삭제</button></div>
       <p class="small muted" id="ps-counts">일정·할 일 ${n}건 · 휴지통 ${st.items.length - n}건 · 내보내기 이력 ${st.exports.length}건</p>
@@ -580,6 +592,7 @@
     const $ = id => document.getElementById(id); if (!$('pc-settings')) return;
     MW.pdb.count('outbox').then(n => { const el = $('ps-outbox'); if (el) el.textContent = n; }).catch(() => {});
     $('ps-role').onchange = async e => { st.meta.deviceRole = e.target.value; try { await saveMeta(); MW.ui.toast('저장했습니다.'); } catch (er) { MW.ui.toast(er.message, true); } };
+    $('ps-auto').onchange = async e => { st.meta.autoPhone = e.target.checked; try { await saveMeta(); MW.ui.toast('저장했습니다.'); } catch (er) { MW.ui.toast(er.message, true); } };
     $('ps-only').onchange = async e => { MW.state.settings.personalOnly = e.target.checked; await MW.app.saveSettings(); MW.app.route(); };
     $('ps-export').onclick = async () => {
       try { const data = await MW.pdb.exportAll(); download('my-workspace-personal-backup-' + C().today() + '.json', JSON.stringify(data), 'application/json'); MW.ui.toast('개인 일정 백업 파일을 내보냈습니다. 업무 자료는 들어 있지 않습니다.'); }

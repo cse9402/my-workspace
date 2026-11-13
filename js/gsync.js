@@ -111,6 +111,21 @@
     let items = await MW.pdb.all('items');
     const byId = new Map(items.map(i => [i.id, i]));
     const byEvent = new Map(items.filter(i => i.sync && i.sync.google && i.sync.google.eventId).map(i => [i.sync.google.eventId, i]));
+    /* 휴대폰으로 이미 보낸 일정(ICS·Google 바로 추가)이 Google에 들어와 있으면 새로 만들지 않고 연결(중복 방지) */
+    const sent = new Map();
+    (await MW.pdb.all('exports')).filter(x => x.method !== 'intent').sort((a, b) => a.at.localeCompare(b.at)).forEach(x => x.items.forEach(r => sent.set(r.id, { version: r.version, method: x.method })));
+    const unlinked = it => !(it.sync && it.sync.google && it.sync.google.eventId && !it.sync.google.remoteDeleted);
+    const findSent = g => {
+      const m = /^(.+)@my-workspace\.local$/.exec(g.iCalUID || '');
+      if (m && sent.has(m[1]) && byId.get(m[1]) && unlinked(byId.get(m[1])) && !byId.get(m[1]).deletedAt) return byId.get(m[1]);
+      const gs = g.start ? (g.start.date || String(g.start.dateTime || '').slice(0, 16)) : '';
+      for (const it of byId.values()) {
+        const sv = sent.get(it.id); if (!sv || sv.method !== 'gcal-link' || it.deletedAt || !unlinked(it)) continue;
+        const e = C.toGoogle(it).event, ls = e.start.date || String(e.start.dateTime || '').slice(0, 16);
+        if (g.summary === e.summary && gs === ls) return it;
+      }
+      return null;
+    };
     try {
       /* 1) 가져오기: 마지막 동기화 이후 바뀐 Google 일정 (처음이거나 토큰 만료 시 최근 1년치 전체) */
       step('Google 일정 가져오는 중…');
@@ -135,6 +150,13 @@
           if (local.sync && local.sync.google && local.sync.google.eventId && !local.sync.google.remoteDeleted) continue;   // 다른 Google 일정과 이미 연결됨 → 건드리지 않음
           /* 앱이 보낸 일정(mwId)인데 연결 정보가 없는 경우(예: 기록 초기화): 마지막으로 보낸 버전 기준으로 다시 연결 */
           local = Object.assign(clone(local), { sync: Object.assign({ error: null }, local.sync, { google: linkInfo(s, g, Number(g.extendedProperties.private.mwVersion) || 0) }) });
+          await MW.pdb.saveSyncInfo(local); byId.set(local.id, local); byEvent.set(g.id, local);
+        } else if (!local && g.status !== 'cancelled') {
+          const f = findSent(g);
+          if (f) {                                                      // 휴대폰으로 보낸 일정: 보낸 버전 기준으로 연결(이후 고친 내용은 Google로 보냄)
+            local = Object.assign(clone(f), { sync: Object.assign({ error: null }, f.sync, { google: linkInfo(s, g, sent.get(f.id).version || 0) }) });
+            await MW.pdb.saveSyncInfo(local); byId.set(local.id, local); byEvent.set(g.id, local); rep.linkedSent = (rep.linkedSent || 0) + 1;
+          }
         }
         if (g.status === 'cancelled') {
           if (!local || local.deletedAt) { if (local) { local.sync.google.remoteDeleted = true; await MW.pdb.saveSyncInfo(local); byId.set(local.id, local); } continue; }
@@ -162,6 +184,7 @@
           local.sync.google.remoteUpdated = g.updated; await MW.pdb.saveSyncInfo(local);
         }
       }
+      if (rep.linkedSent) rep.notes.push(`휴대폰으로 이미 보낸 일정 ${rep.linkedSent}건은 Google에 있는 일정과 연결했습니다(새로 만들지 않음).`);
       if (rep.skippedInstances) rep.notes.push(`Google에서 반복 일정의 특정 회차만 바꾼 내용 ${rep.skippedInstances}건은 아직 가져오지 않습니다.`);
 
       /* 2) 보내기: 앱에서 새로 만들었거나 고친 일정, 삭제한 일정 */
