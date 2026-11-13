@@ -1,6 +1,6 @@
 /* 서비스 워커: 아래 목록의 "앱 화면 파일"만 캐시합니다.
    사용자 자료(IndexedDB, 가져온 JSON·CSV, 백업 파일)는 캐시에 넣지 않으며, 목록에 없는 요청은 건드리지 않습니다. */
-const CACHE = 'mw-shell-v4';
+const CACHE = 'mw-shell-v5';
 const FILES = ['./', 'index.html', 'offline.html', 'css/style.css', 'css/components.css', 'css/responsive.css',
   'js/db.js', 'js/security.js', 'js/importer.js', 'js/search.js', 'js/archive.js', 'js/tasks.js', 'js/editor.js', 'js/docs.js', 'js/routine.js', 'js/sync.js', 'js/calendar.js', 'js/pdb.js', 'js/personal.js', 'js/gsync.js', 'js/gsync-ui.js', 'sync.html', 'js/app.js',
   'demo-data/demo-data.js', 'manifest.webmanifest', 'assets/icon-192.png', 'assets/icon-512.png'];

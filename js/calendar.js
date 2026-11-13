@@ -288,18 +288,23 @@
      안드로이드 표준 캘린더 입력 화면(ACTION_INSERT)에 제목·시간·장소·설명·반복을 채워 엽니다. 저장은 사용자가 캘린더 앱에서 누릅니다.
      안드로이드 표준 입력 화면은 알림 값을 받지 않으므로 알림은 캘린더 앱의 기본 알림이 적용됩니다. */
   C.epochKST = (d, t) => { const a = P(d), m = t && isTime(t) ? tmin(t) : 0; return Date.UTC(a[0], a[1] - 1, a[2], 0, m) - 9 * 3600e3; };
-  C.intentUrl = it => {
-    const src = hasRule(it) && C.normalizeStart(it) ? Object.assign({}, it, { start: C.normalizeStart(it), end: addDays(it.end || it.start, dn(C.normalizeStart(it)) - dn(it.start)) }) : it;
-    const e = src.allDay ? null : endOf(src);
-    const begin = C.epochKST(src.start, src.allDay ? '' : src.startTime), end = src.allDay ? C.epochKST(src.end || src.start, '') : C.epochKST(e.date, e.time);
-    const ex = (k, v) => v ? `S.${k}=${encodeURIComponent(v)};` : '';
-    const title = (it.type === 'task' ? '[할 일] ' : '') + it.title, desc = [it.desc, it.memo ? '메모: ' + it.memo : ''].filter(Boolean).join('\n');
-    return 'intent:#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.dir/event;' + ex('title', title) + ex('description', desc) + ex('eventLocation', it.location) +
-      `l.beginTime=${begin};l.endTime=${end};` + (src.allDay ? 'B.allDay=true;' : '') + ex('eventTimezone', TZ) + (hasRule(it) ? ex('rrule', C.rrule(src)) : '') + 'end';
+  /* Google 캘린더 「일정 추가」 화면 링크: 사용자가 눌러서 Google 화면을 열고 직접 저장함(자동 전송 아님)
+     ※ 안드로이드 intent 방식은 브라우저가 캘린더 앱 실행을 막아(실기기 확인) 사용하지 않음 */
+  C.gcalUrl = it0 => {
+    const ns = hasRule(it0) ? C.normalizeStart(it0) : null;
+    const it = ns ? Object.assign({}, it0, { start: ns, end: addDays(it0.end || it0.start, dn(ns) - dn(it0.start)) }) : it0;
+    const dates = it.allDay ? dd(it.start) + '/' + dd(addDays(it.end || it.start, 1)) : (e => dt(it.start, it.startTime) + '/' + dt(e.date, e.time))(endOf(it));
+    const q = new URLSearchParams();
+    q.set('action', 'TEMPLATE'); q.set('text', (it.type === 'task' ? '[할 일] ' : '') + it.title); q.set('dates', dates);
+    if (!it.allDay) q.set('ctz', TZ);
+    const desc = [it.desc, it.memo ? '메모: ' + it.memo : ''].filter(Boolean).join('\n'); if (desc) q.set('details', desc);
+    if (it.location) q.set('location', it.location);
+    if (hasRule(it)) q.set('recur', 'RRULE:' + C.rrule(it));
+    return 'https://calendar.google.com/calendar/render?' + q.toString();
   };
-  C.intentLimits = it => {                                          // 바로 추가로는 넘어가지 않는 내용
+  C.linkLimits = it => {                                            // 바로 추가 링크로는 넘어가지 않는 내용
     const w = [];
-    if ((it.alarms || []).length) w.push('알림 시간(캘린더 앱의 기본 알림이 적용됨)');
+    if ((it.alarms || []).length) w.push('알림 시간(Google 캘린더 기본 알림이 적용됨)');
     if (hasRule(it) && (it.exdates || []).length) w.push(`뺀 날 ${it.exdates.length}일`);
     if (hasRule(it) && Object.keys(it.overrides || {}).filter(k => Object.keys(it.overrides[k]).some(x => x !== 'done')).length) w.push('따로 고친 회차');
     return w;

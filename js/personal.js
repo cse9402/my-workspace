@@ -143,7 +143,7 @@
   }
 
   /* ---------- 휴대폰으로 보내기 (ICS) ---------- */
-  const lastExport = () => { const m = {}; st.exports.slice().sort((a, b) => a.at.localeCompare(b.at)).forEach(x => x.items.forEach(r => { m[r.id] = { version: r.version, at: x.at }; })); return m; };
+  const lastExport = () => { const m = {}; st.exports.filter(x => x.method !== 'intent').sort((a, b) => a.at.localeCompare(b.at)).forEach(x => x.items.forEach(r => { m[r.id] = { version: r.version, at: x.at }; })); return m; };
   const gLinked = it => !!(it.sync && it.sync.google && it.sync.google.eventId && !it.sync.google.remoteDeleted);
   const exportState = it => {
     if (gLinked(it)) return it.version === it.sync.google.syncedVersion ? 'google' : 'google-pending';   // Google 동기화로 휴대폰에 들어가는 일정
@@ -201,7 +201,7 @@
       ${mod.length ? `<div class="notice small"><b>보낸 뒤 수정한 일정 ${mod.length}건</b>: 휴대폰에 있는 이전 일정이 자동으로 바뀌는지는 삼성 캘린더 버전에 따라 다릅니다(실기기 확인 필요). 중복을 피하려면 휴대폰에서 이전 일정을 지운 뒤 새 파일을 가져오세요.</div>` : ''}
       ${st.meta.deviceRole === 'admin-pc' ? '<label class="row notice bad small" style="font-weight:400"><input type="checkbox" id="xf-admin"> 행정 PC에서 만든 파일을 휴대폰으로 옮겨도 되는지 기관 보안정책을 확인했습니다.</label>' : ''}
       <p class="small muted">파일에는 일정명·시간·장소·설명·메모·알림이 들어갑니다. 업무 자료는 들어가지 않습니다.</p>
-      <div class="row"><button class="btn primary" id="xf-go">파일 내려받기</button><button class="btn" id="xf-share" hidden>공유하기</button><button class="btn" id="xf-intent" hidden>삼성 캘린더에 바로 추가</button></div>
+      <div class="row"><button class="btn primary" id="xf-go">파일 내려받기</button><button class="btn" id="xf-share" hidden>공유하기</button><button class="btn" id="xf-intent" hidden>Google 캘린더에 바로 추가</button></div>
       <p class="small muted" id="xf-tip" hidden>내려받은 파일은 화면 위 알림창이나 「내 파일 › 다운로드」에서 눌러 열고 삼성 캘린더를 고르면 됩니다.</p>`);
     const $ = id => document.getElementById(id), final = () => ok.filter(i => exportState(i) !== 'same' || ($('xf-same') && $('xf-same').checked));
     const canIntent = isAndroid() && st.meta.deviceRole !== 'admin-pc';
@@ -235,15 +235,27 @@
     let noShare = false; try { noShare = localStorage.getItem('mw-noshare-ics') === '1'; } catch (_) { /* 저장소 불가 */ }
     try { const f = new File(['x'], 'a.ics', { type: 'text/calendar' }); if (!noShare && navigator.canShare && navigator.canShare({ files: [f] })) { $('xf-share').hidden = false; $('xf-share').onclick = () => go(true); } } catch (_) { /* 공유 미지원 */ }
     if (isAndroid()) $('xf-tip').hidden = false;
-    $('xf-intent').onclick = async () => {
+    $('xf-intent').onclick = () => {
       if ($('xf-admin') && !$('xf-admin').checked) return MW.ui.toast('행정 PC 확인란을 먼저 체크해 주세요.', true);
-      const cur = final()[0]; if (!cur) return;
-      const url = C().intentUrl(cur);
-      await recordExport([cur], 'intent', '바로 추가 1건');
-      MW.ui.closeModal(); MW.ui.toast('캘린더 앱에서 저장을 눌러야 등록됩니다. 알림은 캘린더 기본 알림이 적용됩니다.');
-      MW.personal._lastIntent = url; if (!MW.personal._noNavigate) location.href = url;
-      MW.app.refreshSoon();
+      const cur = final()[0]; if (cur) quickAdd(cur);
     };
+  }
+  /* Google 캘린더 바로 추가: 링크를 열기만 하고, 사용자가 「저장했습니다」를 눌러야 보냄으로 기록 */
+  function quickAdd(cur) {
+    const url = C().gcalUrl(cur);
+    MW.personal._lastLink = url;
+    if (!MW.personal._noNavigate) window.open(url, '_blank', 'noopener');
+    MW.ui.modal(`<h2>Google 캘린더에 추가</h2>
+      <p>Google 캘린더 화면에서 <b>계정(개인 Google)</b>을 확인하고 <b>저장</b>을 누른 뒤 돌아와 주세요.</p>
+      <p class="small muted">저장했는지는 앱이 알 수 없으므로, 아래 버튼을 눌러야 「보냄」으로 기록됩니다. 알림은 Google 캘린더 기본 알림이 적용됩니다.</p>
+      <div class="row"><button class="btn primary" id="qa-yes">저장했습니다</button><button class="btn" id="qa-no">저장하지 않았습니다</button></div>
+      <p class="small muted">화면이 열리지 않았으면 <a href="${esc(url)}" target="_blank" rel="noopener" id="qa-open">여기를 눌러 다시 열기</a></p>`);
+    document.getElementById('qa-yes').onclick = async () => {
+      await recordExport([cur], 'gcal-link', 'Google 캘린더 바로 추가 1건');
+      MW.ui.closeModal(); MW.ui.toast('「보냄」으로 기록했습니다. 삼성 캘린더에 일정이 들어왔는지 확인해 주세요.');
+      MW.app.refreshSoon(); if (location.hash.startsWith('#/cal')) render(document.getElementById('view'), { q: { v: S.v } });
+    };
+    document.getElementById('qa-no').onclick = () => { MW.ui.closeModal(); MW.ui.toast('기록하지 않았습니다. 「보낸 적 없음」으로 남아 있습니다.'); };
   }
   /* 삼성 리마인더: 공개 API가 없어 직접 등록하지 않음. 휴대폰의 「공유」로 리마인더 앱에 보내거나 글을 복사 */
   async function shareReminder(o) {
@@ -323,8 +335,8 @@
       </div>
       <div class="row" style="margin-top:14px"><button class="btn primary" id="pe-save">저장</button>${isNew ? '' : (occ ? '<button class="btn danger" id="pe-delone">이 회차만 삭제</button><button class="btn danger" id="pe-delall">반복 전체 삭제</button>' : '<button class="btn danger" id="pe-del">삭제</button>')}</div>
       ${isNew ? '' : `<details class="mbox" id="pe-phone" ${['never', 'modified'].includes(h) && st.meta.deviceRole !== 'admin-pc' ? 'open' : ''}><summary><b>휴대폰으로 보내기 · 공유</b> <span class="small muted">${h === 'never' ? '보낸 적 없음' : h === 'same' ? '보냄 ' + esc(MW.docs.fmt(hist.at)) : h === 'google' ? 'Google 동기화됨' : h === 'google-pending' ? 'Google 동기화 대기(다음 동기화 때 반영)' : '보낸 뒤 수정됨 — 다시 보내기 필요'}</span></summary>
-        ${isAndroid() && st.meta.deviceRole !== 'admin-pc' ? `<div style="margin-top:8px"><button class="btn primary" id="pe-intent">삼성 캘린더에 바로 추가</button>
-          <p class="small muted" style="margin:6px 0 0">캘린더 앱의 새 일정 화면이 내용이 채워진 채로 열립니다. 저장할 캘린더(Google 계정)를 확인하고 저장을 누르세요.${C().intentLimits(it).length ? ' <b>넘어가지 않는 내용:</b> ' + esc(C().intentLimits(it).join(', ')) + ' — 모두 넘기려면 아래 ICS 파일을 쓰세요.' : ''}</p></div>` : '<p class="small muted" style="margin:8px 0 0">「삼성 캘린더에 바로 추가」 버튼은 안드로이드 휴대폰에서 보입니다.</p>'}
+        ${isAndroid() && st.meta.deviceRole !== 'admin-pc' ? `<div style="margin-top:8px"><button class="btn primary" id="pe-intent">Google 캘린더에 바로 추가</button>
+          <p class="small muted" style="margin:6px 0 0">Google 캘린더의 새 일정 화면이 내용이 채워진 채로 열립니다. 개인 Google 계정으로 저장하면 같은 계정을 쓰는 삼성 캘린더에도 들어옵니다(실기기 확인 필요).${C().linkLimits(it).length ? ' <b>넘어가지 않는 내용:</b> ' + esc(C().linkLimits(it).join(', ')) + ' — 모두 넘기려면 아래 ICS 파일을 쓰세요.' : ''}</p></div>` : '<p class="small muted" style="margin:8px 0 0">「Google 캘린더에 바로 추가」 버튼은 개인 안드로이드 휴대폰에서 보입니다.</p>'}
         <div class="row" style="margin-top:8px"><button class="btn" id="pe-ics">이 일정 ICS 파일 만들기</button><button class="btn" id="pe-rem">리마인더로 공유·복사</button></div>
         <p class="small muted">리마인더: 삼성 리마인더는 공개 연동 기능이 없어 직접 등록하지 않습니다. 휴대폰에서 「공유」 → Reminder를 고르거나 복사해서 붙여 넣으세요(실기기 확인 필요).</p></details>
         <details class="mbox"><summary><b>변경 이력</b></summary><div id="pe-hist" class="small muted">불러오는 중…</div></details>
@@ -446,13 +458,10 @@
     if ($('pe-delall')) $('pe-delall').onclick = () => { if (confirm('반복 일정 전체를 휴지통으로 옮깁니다. 계속할까요?')) del('all'); };
     if ($('pe-delone')) $('pe-delone').onclick = () => del('one');
     if ($('pe-ics')) $('pe-ics').onclick = () => exportFlow([st.items.find(x => x.id === it.id)], '이 일정');
-    if ($('pe-intent')) $('pe-intent').onclick = async () => {
+    if ($('pe-intent')) $('pe-intent').onclick = () => {
       const cur = st.items.find(x => x.id === it.id); if (!cur) return;
       if (blocked(cur)) return MW.ui.toast('원노트에서 가져온 일정은 「내보내기 확인」을 체크한 뒤에 보낼 수 있습니다.', true);
-      const url = C().intentUrl(cur);
-      await recordExport([cur], 'intent', '바로 추가 1건');
-      MW.ui.closeModal(); MW.ui.toast('캘린더 앱에서 저장을 눌러야 등록됩니다.');
-      MW.personal._lastIntent = url; if (!MW.personal._noNavigate) location.href = url;
+      quickAdd(cur);
     };
     if ($('pe-rem')) $('pe-rem').onclick = () => shareReminder(occ || C().expand(it, it.start, it.end || it.start)[0] || it);
     if ($('pe-hist')) MW.pdb.all('history').then(hs => {
