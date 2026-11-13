@@ -154,7 +154,9 @@
   /* 아직 휴대폰 캘린더에 넣지 않은 일정(오늘 이후 회차가 있는 것): 보낸 적 없음 + 보낸 뒤 수정됨 */
   function pendingPhone() {
     const t = C().today();
-    return live().filter(i => !blocked(i) && ['never', 'modified'].includes(exportState(i)) && !(i.type === 'task' && !(i.rule && i.rule.freq) && i.done) && C().expand(i, t, C().addDays(t, 400)).length)
+    const now = C().now().time;
+    const ahead = o => o.allDay || !o.startTime || (o.end || o.start) > t || (o.endTime || o.startTime) > now;   // 오늘 이미 끝난 시간 일정은 보낼 필요 없음
+    return live().filter(i => !blocked(i) && ['never', 'modified'].includes(exportState(i)) && !(!(i.rule && i.rule.freq) && i.done) && C().expand(i, t, C().addDays(t, 400)).filter(o => !o.done && ahead(o)).length)
       .sort((a, b) => a.start.localeCompare(b.start));
   }
   const pendingCard = () => {
@@ -162,7 +164,7 @@
     const n = pendingPhone().length;
     return n ? `<div class="notice info small ppend"><span>휴대폰 캘린더에 아직 넣지 않은 일정 <b class="pp-n">${n}</b>건</span> <button type="button" class="btn sm primary" data-sendall="1">한 번에 보내기</button></div>` : '';
   };
-  function sendPending() { const l = pendingPhone(); if (!l.length) return MW.ui.toast('휴대폰 캘린더에 보낼 일정이 없습니다.'); exportFlow(l, '아직 휴대폰에 넣지 않은 일정'); }
+  function sendPending() { const l = pendingPhone(); if (!l.length) { refreshView(); return MW.ui.toast('휴대폰 캘린더에 보낼 일정이 없습니다. 화면을 새로 고쳤습니다.'); } exportFlow(l, '아직 휴대폰에 넣지 않은 일정'); }
   async function recordExport(list, method, label, filename) {
     const rec = { id: 'x_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), at: nowIso(), filename: filename || '', method, label, items: list.map(i => ({ id: i.id, version: i.version })) };
     try { await MW.pdb.put('exports', rec); st.exports.push(rec); } catch (e) { MW.ui.toast('내보내기 이력을 저장하지 못했습니다: ' + e.message, true); }
@@ -239,6 +241,16 @@
       if ($('xf-admin') && !$('xf-admin').checked) return MW.ui.toast('행정 PC 확인란을 먼저 체크해 주세요.', true);
       const cur = final()[0]; if (cur) quickAdd(cur);
     };
+  }
+  /* 화면에 보이는 「아직 넣지 않은 일정 N건」이 실제와 어긋나지 않도록 다시 그림 */
+  function refreshView() {
+    if (location.hash.startsWith('#/cal') && !document.querySelector('#modal:not([hidden]), .modal.open')) render(document.getElementById('view'), { q: { v: S.v } });
+    MW.app.refreshSoon();
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && st.loaded) reloadAndRefresh(); });
+  async function reloadAndRefresh() {   // 다른 탭(동기화 화면 등)에서 바뀐 내용 반영
+    try { st.items = await MW.pdb.all('items'); st.exports = await MW.pdb.all('exports'); } catch (_) { return; }
+    refreshView();
   }
   /* Google 캘린더 바로 추가: 링크를 열기만 하고, 사용자가 「저장했습니다」를 눌러야 보냄으로 기록 */
   function quickAdd(cur) {
