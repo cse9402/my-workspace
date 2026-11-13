@@ -162,7 +162,7 @@
     const n = pendingPhone().length;
     return n ? `<div class="notice info small ppend"><span>휴대폰 캘린더에 아직 넣지 않은 일정 <b class="pp-n">${n}</b>건</span> <button type="button" class="btn sm primary" data-sendall="1">한 번에 보내기</button></div>` : '';
   };
-  function sendPending() { const l = pendingPhone(); if (!l.length) return MW.ui.toast('휴대폰 캘린더에 보낼 일정이 없습니다.'); exportFlow(l, `아직 휴대폰에 넣지 않은 일정 ${l.length}건`); }
+  function sendPending() { const l = pendingPhone(); if (!l.length) return MW.ui.toast('휴대폰 캘린더에 보낼 일정이 없습니다.'); exportFlow(l, '아직 휴대폰에 넣지 않은 일정'); }
   async function recordExport(list, method, label, filename) {
     const rec = { id: 'x_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), at: nowIso(), filename: filename || '', method, label, items: list.map(i => ({ id: i.id, version: i.version })) };
     try { await MW.pdb.put('exports', rec); st.exports.push(rec); } catch (e) { MW.ui.toast('내보내기 이력을 저장하지 못했습니다: ' + e.message, true); }
@@ -195,32 +195,55 @@
     const ok = items.filter(i => !i.deletedAt && !blocked(i)), excl = items.length - ok.length;
     const same = ok.filter(i => exportState(i) === 'same'), mod = ok.filter(i => exportState(i) === 'modified');
     if (!ok.length) return MW.ui.toast(excl ? '원노트에서 가져온 일정은 「내보내기 확인」을 한 뒤에만 보낼 수 있습니다.' : '내보낼 일정이 없습니다.', true);
-    MW.ui.modal(`<h2>ICS 파일 만들기</h2><p>${esc(label)} · <b id="xf-count">${ok.length}</b>건</p>
+    MW.ui.modal(`<h2>ICS 파일 만들기</h2><p>${esc(label)} <b id="xf-count">${ok.length}</b>건</p>
       ${excl ? `<div class="notice small">원노트에서 가져와 아직 확인하지 않은 일정 ${excl}건은 제외했습니다.</div>` : ''}
       ${same.length ? `<div class="notice small"><b>이미 보낸 일정 ${same.length}건</b>이 들어 있습니다. 같은 파일을 휴대폰에서 다시 가져오면 일정이 <b>두 번 등록</b>될 수 있습니다.<label class="row" style="margin-top:6px;font-weight:400"><input type="checkbox" id="xf-same"> 이미 보낸 일정도 다시 포함</label></div>` : ''}
       ${mod.length ? `<div class="notice small"><b>보낸 뒤 수정한 일정 ${mod.length}건</b>: 휴대폰에 있는 이전 일정이 자동으로 바뀌는지는 삼성 캘린더 버전에 따라 다릅니다(실기기 확인 필요). 중복을 피하려면 휴대폰에서 이전 일정을 지운 뒤 새 파일을 가져오세요.</div>` : ''}
       ${st.meta.deviceRole === 'admin-pc' ? '<label class="row notice bad small" style="font-weight:400"><input type="checkbox" id="xf-admin"> 행정 PC에서 만든 파일을 휴대폰으로 옮겨도 되는지 기관 보안정책을 확인했습니다.</label>' : ''}
       <p class="small muted">파일에는 일정명·시간·장소·설명·메모·알림이 들어갑니다. 업무 자료는 들어가지 않습니다.</p>
-      <div class="row"><button class="btn primary" id="xf-go">파일 내려받기</button><button class="btn" id="xf-share" hidden>공유하기</button></div>`);
+      <div class="row"><button class="btn primary" id="xf-go">파일 내려받기</button><button class="btn" id="xf-share" hidden>공유하기</button><button class="btn" id="xf-intent" hidden>삼성 캘린더에 바로 추가</button></div>
+      <p class="small muted" id="xf-tip" hidden>내려받은 파일은 화면 위 알림창이나 「내 파일 › 다운로드」에서 눌러 열고 삼성 캘린더를 고르면 됩니다.</p>`);
     const $ = id => document.getElementById(id), final = () => ok.filter(i => exportState(i) !== 'same' || ($('xf-same') && $('xf-same').checked));
-    const upd = () => { $('xf-count').textContent = final().length; };
+    const canIntent = isAndroid() && st.meta.deviceRole !== 'admin-pc';
+    const upd = () => { const n = final().length; $('xf-count').textContent = n; $('xf-intent').hidden = !(canIntent && n === 1); };
     if ($('xf-same')) $('xf-same').onchange = upd; upd();
     const go = async share => {
       if ($('xf-admin') && !$('xf-admin').checked) return MW.ui.toast('행정 PC 확인란을 먼저 체크해 주세요. 확인 전에는 파일을 만들지 않습니다.', true);
       const list = final();
       if (!list.length) return MW.ui.toast('내보낼 일정이 없습니다. (이미 보낸 일정만 남았습니다)', true);
       const now = C().now(), name = `my-personal-${now.date.replace(/-/g, '')}-${now.time.replace(':', '')}.ics`, text = C().toICS(list);
+      let method = share ? 'share' : 'ics', fellBack = false;
       try {
         if (share) await navigator.share({ files: [new File([text], name, { type: 'text/calendar' })], title: 'MY WORKSPACE 개인 일정' });
         else download(name, text, 'text/calendar;charset=utf-8');
-      } catch (e) { if (e && e.name === 'AbortError') return; return MW.ui.toast('파일을 보내지 못했습니다: ' + e.message, true); }
-      await recordExport(list, share ? 'share' : 'ics', label, name);
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+        if (!share) return MW.ui.toast('파일을 만들지 못했습니다: ' + e.message, true);
+        /* 일부 브라우저(삼성 인터넷 등)는 .ics 파일 공유를 막음 → 이 기기에서는 공유 버튼을 숨기고 내려받기로 대신함 */
+        try { localStorage.setItem('mw-noshare-ics', '1'); } catch (_) { /* 저장 불가 */ }
+        try { download(name, text, 'text/calendar;charset=utf-8'); } catch (e2) { return MW.ui.toast('파일을 만들지 못했습니다: ' + e2.message, true); }
+        method = 'ics'; fellBack = true;
+      }
+      await recordExport(list, method, label, name);
       MW.ui.closeModal();
-      MW.ui.toast(`ICS 파일(${list.length}건)을 만들었습니다. 휴대폰에서 파일을 열어 삼성 캘린더로 가져와야 일정과 알림이 등록됩니다.`);
+      MW.ui.toast(fellBack
+        ? `이 브라우저는 일정 파일 공유를 지원하지 않아 대신 파일(${list.length}건)을 내려받았습니다. 알림창이나 「내 파일 › 다운로드」에서 파일을 열고 삼성 캘린더를 골라야 등록됩니다.`
+        : `ICS 파일(${list.length}건)을 만들었습니다. 휴대폰에서 파일을 열어 삼성 캘린더로 가져와야 일정과 알림이 등록됩니다.`);
       MW.app.refreshSoon(); if (location.hash.startsWith('#/cal')) render(document.getElementById('view'), { q: { v: S.v } });
     };
     $('xf-go').onclick = () => go(false);
-    try { const f = new File(['x'], 'a.ics', { type: 'text/calendar' }); if (navigator.canShare && navigator.canShare({ files: [f] })) { $('xf-share').hidden = false; $('xf-share').onclick = () => go(true); } } catch (_) { /* 공유 미지원 */ }
+    let noShare = false; try { noShare = localStorage.getItem('mw-noshare-ics') === '1'; } catch (_) { /* 저장소 불가 */ }
+    try { const f = new File(['x'], 'a.ics', { type: 'text/calendar' }); if (!noShare && navigator.canShare && navigator.canShare({ files: [f] })) { $('xf-share').hidden = false; $('xf-share').onclick = () => go(true); } } catch (_) { /* 공유 미지원 */ }
+    if (isAndroid()) $('xf-tip').hidden = false;
+    $('xf-intent').onclick = async () => {
+      if ($('xf-admin') && !$('xf-admin').checked) return MW.ui.toast('행정 PC 확인란을 먼저 체크해 주세요.', true);
+      const cur = final()[0]; if (!cur) return;
+      const url = C().intentUrl(cur);
+      await recordExport([cur], 'intent', '바로 추가 1건');
+      MW.ui.closeModal(); MW.ui.toast('캘린더 앱에서 저장을 눌러야 등록됩니다. 알림은 캘린더 기본 알림이 적용됩니다.');
+      MW.personal._lastIntent = url; if (!MW.personal._noNavigate) location.href = url;
+      MW.app.refreshSoon();
+    };
   }
   /* 삼성 리마인더: 공개 API가 없어 직접 등록하지 않음. 휴대폰의 「공유」로 리마인더 앱에 보내거나 글을 복사 */
   async function shareReminder(o) {
@@ -422,7 +445,7 @@
     if ($('pe-del')) $('pe-del').onclick = () => del('all');
     if ($('pe-delall')) $('pe-delall').onclick = () => { if (confirm('반복 일정 전체를 휴지통으로 옮깁니다. 계속할까요?')) del('all'); };
     if ($('pe-delone')) $('pe-delone').onclick = () => del('one');
-    if ($('pe-ics')) $('pe-ics').onclick = () => exportFlow([st.items.find(x => x.id === it.id)], '일정 1건');
+    if ($('pe-ics')) $('pe-ics').onclick = () => exportFlow([st.items.find(x => x.id === it.id)], '이 일정');
     if ($('pe-intent')) $('pe-intent').onclick = async () => {
       const cur = st.items.find(x => x.id === it.id); if (!cur) return;
       if (blocked(cur)) return MW.ui.toast('원노트에서 가져온 일정은 「내보내기 확인」을 체크한 뒤에 보낼 수 있습니다.', true);
@@ -484,7 +507,7 @@
         try { await save(it); t.outerHTML = '<span class="chip c-ok">추가됨</span>'; MW.ui.toast('개인 일정에 추가했습니다(이 기기 안에서만). 휴대폰으로 보내려면 일정을 열어 「내보내기 확인」을 체크하세요.'); } catch (er) { MW.ui.toast('추가 실패: ' + er.message, true); } return; }
       if (t.id === 'ex-all') { pb.querySelectorAll('[data-ex]:not(:disabled)').forEach(c => { c.checked = true; }); return exCount(); }
       if (t.id === 'ex-none') { pb.querySelectorAll('[data-ex]').forEach(c => { c.checked = false; }); return exCount(); }
-      if (t.id === 'ex-go') { const ids = [...pb.querySelectorAll('[data-ex]:checked')].map(c => c.dataset.ex); if (!ids.length) return MW.ui.toast('내보낼 일정을 선택해 주세요.', true); return exportFlow(ids.map(id => st.items.find(x => x.id === id)), `${EF.from} ~ ${EF.to} 중 선택 ${ids.length}건`); }
+      if (t.id === 'ex-go') { const ids = [...pb.querySelectorAll('[data-ex]:checked')].map(c => c.dataset.ex); if (!ids.length) return MW.ui.toast('내보낼 일정을 선택해 주세요.', true); return exportFlow(ids.map(id => st.items.find(x => x.id === id)), `${EF.from} ~ ${EF.to} 중 선택한 일정`); }
     };
     pb.onkeydown = e => { const cell = e.target.closest && e.target.closest('.mcell'); if (cell && (e.key === 'Enter' || e.key === ' ') && e.target === cell) { e.preventDefault(); S.sel = cell.dataset.day; $('pc-body').innerHTML = vMonth(); } };
     const exCount = () => { const n = pb.querySelectorAll('[data-ex]:checked').length, el = $('ex-n'); if (el) el.textContent = `선택 ${n}건`; };
