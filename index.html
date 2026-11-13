@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b1020">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>MY WORKSPACE</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="assets/icon-192.png">
+<link rel="apple-touch-icon" href="assets/icon-192.png">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/responsive.css">
+</head>
+<body>
+<a class="skip" href="#view">본문으로 건너뛰기</a>
+<div class="app">
+  <aside class="sidebar" aria-label="주 메뉴">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">M</span><span class="brand-name">MY WORKSPACE</span></div>
+    <nav id="nav-side" class="nav"></nav>
+    <div class="side-foot"><span id="net-side" class="net"></span></div>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <form id="top-search" class="top-search" role="search">
+        <input id="q" type="search" placeholder="통합 검색 ( / 키 )" aria-label="통합 검색" autocomplete="off">
+        <button class="btn primary" type="submit">검색</button>
+      </form>
+      <div class="top-actions">
+        <span id="save-state" class="save-state" aria-live="polite"></span>
+        <button id="btn-mask" class="btn ghost" type="button" title="전화번호·이메일 등 화면 가리기"></button>
+        <button id="btn-theme" class="btn ghost" type="button" aria-label="다크·라이트 전환"></button>
+        <button id="btn-help" class="btn ghost" type="button" aria-label="단축키 도움말">?</button>
+      </div>
+    </header>
+    <div id="offline-bar" class="offline-bar" hidden>오프라인 상태입니다. 이 기기에 저장된 자료는 계속 볼 수 있습니다.</div>
+    <main id="view" class="view" tabindex="-1"><div class="loading">불러오는 중…</div></main>
+    <footer class="footer" id="footer"></footer>
+  </div>
+</div>
+<nav id="nav-bottom" class="bottom-nav" aria-label="모바일 메뉴"></nav>
+<button id="fab" class="fab" type="button" aria-label="빠른 메모 쓰기" title="빠른 메모 (Alt+N)"><span aria-hidden="true">＋</span> 메모</button>
+<div id="modal" class="modal" hidden><div class="modal-back" data-close></div><div class="modal-box" role="dialog" aria-modal="true"><button class="modal-x" data-close aria-label="닫기">×</button><div id="modal-body"></div></div></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script src="js/db.js"></script>
+<script src="js/security.js"></script>
+<script src="js/importer.js"></script>
+<script src="js/search.js"></script>
+<script src="js/archive.js"></script>
+<script src="js/tasks.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/docs.js"></script>
+<script src="js/routine.js"></script>
+<script src="js/sync.js"></script>
+<script src="js/calendar.js"></script>
+<script src="js/pdb.js"></script>
+<script src="js/personal.js"></script>
+<script src="demo-data/demo-data.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
