@@ -72,8 +72,22 @@
     if (!Array.isArray(meta) || meta.some(m => !m || typeof m.key !== 'string')) err('meta 항목 형식 오류');
     return { errors, counts };
   }
+  /* 일정 1건 저장: 일정 + 변경 이력(이전 상태) + 자동화 이벤트 기록을 한 번에 저장(하나라도 실패하면 모두 취소) */
+  async function saveItem(prev, next) {
+    const t = new Date().toISOString();
+    next.version = (prev ? prev.version || 0 : 0) + 1; next.updatedAt = t; if (!prev) next.createdAt = t;
+    const evs = MW.cal.changeEvents(prev, next);
+    await tx(['items', 'history', 'outbox'], 'readwrite', S => {
+      S('items').put(next);
+      if (prev) S('history').put({ id: 'h_' + next.id + '_' + prev.version, itemId: next.id, at: t, version: prev.version, snapshot: prev });
+      evs.forEach(e => S('outbox').put(e));                         // 같은 idempotencyKey는 덮어써서 중복 기록 없음
+    });
+    return next;
+  }
+  /* 동기화 정보(sync)만 기록: 내용이 바뀐 것이 아니므로 버전·이력·자동화 기록을 남기지 않음 */
+  async function saveSyncInfo(item) { await tx(['items'], 'readwrite', S => { S('items').put(item); }); return item; }
   MW.pdb = {
-    NAME, APP, stores: STORES, dataStores: DATA, tx, validateBackup,
+    NAME, APP, stores: STORES, dataStores: DATA, tx, validateBackup, saveItem, saveSyncInfo,
     pending: () => pending,
     get: (s, k) => one(s, 'readonly', st => st.get(k)),
     all: s => one(s, 'readonly', st => st.getAll()),

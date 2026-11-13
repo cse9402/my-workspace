@@ -143,3 +143,4 @@ button.chip{font:inherit;font-size:.78rem;cursor:pointer;color:var(--text)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
 .alx{background:none;border:0;color:var(--muted);font:inherit;font-size:1rem;cursor:pointer;padding:0 0 0 4px;min-height:0}
 #pe-alarms .chip{padding:4px 10px}
+.ppend{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;margin:0 0 12px}

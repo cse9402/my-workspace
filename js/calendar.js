@@ -19,6 +19,9 @@
   const tmin = t => { const a = t.split(':').map(Number); return a[0] * 60 + a[1]; };
   const WD_KO = ['일', '월', '화', '수', '목', '금', '토'], WD_ICS = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
   const C = { TZ, pad, dn, ds, addDays, addMonths, wd, daysIn, isDate, isTime, WD_KO };
+  C.hash = str => { let h1 = 0xdeadbeef, h2 = 0x41c6ce57; for (let i = 0; i < str.length; i++) { const ch = str.charCodeAt(i); h1 = Math.imul(h1 ^ ch, 2654435761); h2 = Math.imul(h2 ^ ch, 1597334677); }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909); h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0'); };
 
   /* ---------- 지금(서울 기준) ---------- */
   C._now = null;                                                  // 테스트용: { date: 'YYYY-MM-DD', time: 'HH:MM' }
@@ -279,6 +282,27 @@
     if (!remote) return local.deletedAt ? 'deleted-both' : 'remote-deleted';
     const lc = (local.version || 0) > (s.syncedVersion || 0), rc = !!remote.updated && remote.updated !== s.remoteUpdated;
     return lc && rc ? 'conflict' : lc ? 'push' : rc ? 'pull' : 'in-sync';
+  };
+
+  /* ---------- 안드로이드 캘린더 「새 일정」 화면 바로 열기 (intent 링크) ----------
+     안드로이드 표준 캘린더 입력 화면(ACTION_INSERT)에 제목·시간·장소·설명·반복을 채워 엽니다. 저장은 사용자가 캘린더 앱에서 누릅니다.
+     안드로이드 표준 입력 화면은 알림 값을 받지 않으므로 알림은 캘린더 앱의 기본 알림이 적용됩니다. */
+  C.epochKST = (d, t) => { const a = P(d), m = t && isTime(t) ? tmin(t) : 0; return Date.UTC(a[0], a[1] - 1, a[2], 0, m) - 9 * 3600e3; };
+  C.intentUrl = it => {
+    const src = hasRule(it) && C.normalizeStart(it) ? Object.assign({}, it, { start: C.normalizeStart(it), end: addDays(it.end || it.start, dn(C.normalizeStart(it)) - dn(it.start)) }) : it;
+    const e = src.allDay ? null : endOf(src);
+    const begin = C.epochKST(src.start, src.allDay ? '' : src.startTime), end = src.allDay ? C.epochKST(src.end || src.start, '') : C.epochKST(e.date, e.time);
+    const ex = (k, v) => v ? `S.${k}=${encodeURIComponent(v)};` : '';
+    const title = (it.type === 'task' ? '[할 일] ' : '') + it.title, desc = [it.desc, it.memo ? '메모: ' + it.memo : ''].filter(Boolean).join('\n');
+    return 'intent:#Intent;action=android.intent.action.INSERT;type=vnd.android.cursor.dir/event;' + ex('title', title) + ex('description', desc) + ex('eventLocation', it.location) +
+      `l.beginTime=${begin};l.endTime=${end};` + (src.allDay ? 'B.allDay=true;' : '') + ex('eventTimezone', TZ) + (hasRule(it) ? ex('rrule', C.rrule(src)) : '') + 'end';
+  };
+  C.intentLimits = it => {                                          // 바로 추가로는 넘어가지 않는 내용
+    const w = [];
+    if ((it.alarms || []).length) w.push('알림 시간(캘린더 앱의 기본 알림이 적용됨)');
+    if (hasRule(it) && (it.exdates || []).length) w.push(`뺀 날 ${it.exdates.length}일`);
+    if (hasRule(it) && Object.keys(it.overrides || {}).filter(k => Object.keys(it.overrides[k]).some(x => x !== 'done')).length) w.push('따로 고친 회차');
+    return w;
   };
 
   /* ---------- 자동화(n8n) 이벤트 형식 (전송 기능 없음, 이 기기 안에만 기록) ---------- */

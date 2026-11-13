@@ -2,7 +2,7 @@
    사용자 자료(IndexedDB, 가져온 JSON·CSV, 백업 파일)는 캐시에 넣지 않으며, 목록에 없는 요청은 건드리지 않습니다. */
 const CACHE = 'mw-shell-v3';
 const FILES = ['./', 'index.html', 'offline.html', 'css/style.css', 'css/components.css', 'css/responsive.css',
-  'js/db.js', 'js/security.js', 'js/importer.js', 'js/search.js', 'js/archive.js', 'js/tasks.js', 'js/editor.js', 'js/docs.js', 'js/routine.js', 'js/sync.js', 'js/calendar.js', 'js/pdb.js', 'js/personal.js', 'js/app.js',
+  'js/db.js', 'js/security.js', 'js/importer.js', 'js/search.js', 'js/archive.js', 'js/tasks.js', 'js/editor.js', 'js/docs.js', 'js/routine.js', 'js/sync.js', 'js/calendar.js', 'js/pdb.js', 'js/personal.js', 'js/gsync.js', 'js/gsync-ui.js', 'sync.html', 'js/app.js',
   'demo-data/demo-data.js', 'manifest.webmanifest', 'assets/icon-192.png', 'assets/icon-512.png'];
 const SHELL = new Set(FILES.map(f => new URL(f, self.registration.scope).href));
 const key = req => { const u = new URL(req.url); u.search = ''; u.hash = ''; return u.href; };

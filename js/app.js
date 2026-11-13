@@ -50,6 +50,7 @@
     $('btn-theme').textContent = s.theme === 'dark' ? '☀ 라이트' : '🌙 다크';
     $('btn-mask').textContent = s.mask ? '🙈 가림 켬' : '👁 가림 끔';
     $('footer').textContent = `© 2026 ${s.company || '[회사명]'}. All Rights Reserved.`;
+    try { localStorage.setItem('mw-look', JSON.stringify({ theme: s.theme, fs: s.fs, company: s.company || '[회사명]' })); } catch (_) { /* 화면 설정 공유 실패는 무시 */ }   // sync.html이 같은 테마·회사명을 쓰도록(자료 아님)
   }
   function navHtml(items, cur) { return items.map(n => `<a href="#/${n[0]}" class="${cur === n[0] ? 'on' : ''}" ${cur === n[0] ? 'aria-current="page"' : ''}><span class="ico" aria-hidden="true">${n[1]}</span><span>${n[2]}</span></a>`).join(''); }
 

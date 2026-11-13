@@ -24,19 +24,14 @@
       try { await MW.pdb.clear('staging'); } catch (_) { /* 무시 */ }
       st.items = await MW.pdb.all('items'); st.exports = await MW.pdb.all('exports');
       st.meta = Object.assign({ deviceRole: '' }, (await MW.pdb.get('meta', 'settings')) || {});
+      st.gsync = (await MW.pdb.get('meta', 'gsync')) || null;
       st.loaded = true; st.error = null;
     } catch (e) { st.error = e.message; st.loaded = false; console.error(e); }
   }
   /* 일정 1건 저장: 일정 + 변경 이력(이전 상태) + 자동화 이벤트 기록을 한 번에 저장(하나라도 실패하면 모두 취소) */
   async function save(next) {
-    const prev = st.items.find(x => x.id === next.id) || null, t = nowIso();
-    next.version = (prev ? prev.version || 0 : 0) + 1; next.updatedAt = t; if (!prev) next.createdAt = t;
-    const evs = C().changeEvents(prev, next);
-    await MW.pdb.tx(['items', 'history', 'outbox'], 'readwrite', Sx => {
-      Sx('items').put(next);
-      if (prev) Sx('history').put({ id: 'h_' + next.id + '_' + prev.version, itemId: next.id, at: t, version: prev.version, snapshot: prev });
-      evs.forEach(e => Sx('outbox').put(e));                          // 같은 idempotencyKey는 덮어써서 중복 기록 없음
-    });
+    const prev = st.items.find(x => x.id === next.id) || null;
+    await MW.pdb.saveItem(prev, next);
     if (prev) st.items[st.items.indexOf(prev)] = next; else st.items.push(next);
     trimLater(next.id);
     return next;
@@ -70,7 +65,7 @@
     const role = st.meta.deviceRole;
     const chip = role === 'admin-pc' ? '<span class="chip c-warn">행정 PC</span>' : role === 'personal' ? '<span class="chip c-ok">개인 기기</span>' : '';
     return `<div class="row spread pbar"><div class="row"><span class="chip">이 기기에만 저장 · 다른 기기와 동기화 안 됨</span>${chip}</div>
-      <div class="row"><button class="btn primary" id="pc-add">＋ 일정</button><button class="btn" id="pc-addtask">＋ 할 일</button></div></div>
+      <div class="row"><button class="btn primary" id="pc-add">＋ 일정</button><button class="btn" id="pc-addtask">＋ 할 일</button>${role === 'personal' && onlineOk() ? '<a class="btn" href="sync.html" id="pc-gsync" style="white-space:nowrap">Google 동기화</a>' : ''}</div></div>
       ${role ? '' : `<div class="notice small" id="pc-role">이 기기는 어떤 기기인가요? 행정 PC에서는 휴대폰으로 파일을 옮기기 전에 기관 보안정책을 확인하라는 안내가 표시됩니다.
         <div class="row" style="margin-top:6px"><button class="btn sm" data-role="admin-pc">행정 PC</button><button class="btn sm" data-role="personal">개인 휴대폰·PC</button></div></div>`}`;
   }
@@ -80,7 +75,7 @@
   /* ---------- 보기별 화면 ---------- */
   function vToday() {
     const t = C().today(), os = C().occurrences(st.items, t, t), ev = os.filter(o => o.type === 'event'), soon = C().occurrences(st.items, C().addDays(t, 1), C().addDays(t, 3)).filter(o => o.type === 'event');
-    return `<div class="grid pgrid"><section class="card"><h2>오늘의 일정 <span class="small muted">${esc(C().label(t, { year: 1 }))}</span></h2>${occList(ev, '오늘 일정이 없습니다.')}</section>
+    return pendingCard() + `<div class="grid pgrid"><section class="card"><h2>오늘의 일정 <span class="small muted">${esc(C().label(t, { year: 1 }))}</span></h2>${occList(ev, '오늘 일정이 없습니다.')}</section>
       <section class="card"><h2>오늘의 할 일</h2>${occList(tasksDue(t), '오늘까지 할 일이 없습니다.', { date: 1 })}</section>
       <section class="card"><h2>앞으로 3일</h2>${occList(soon, '예정된 일정이 없습니다.', { date: 1 })}</section></div>`;
   }
@@ -149,17 +144,40 @@
 
   /* ---------- 휴대폰으로 보내기 (ICS) ---------- */
   const lastExport = () => { const m = {}; st.exports.slice().sort((a, b) => a.at.localeCompare(b.at)).forEach(x => x.items.forEach(r => { m[r.id] = { version: r.version, at: x.at }; })); return m; };
-  const exportState = it => { const h = lastExport()[it.id]; return !h ? 'never' : h.version === it.version ? 'same' : 'modified'; };
+  const gLinked = it => !!(it.sync && it.sync.google && it.sync.google.eventId && !it.sync.google.remoteDeleted);
+  const exportState = it => {
+    if (gLinked(it)) return it.version === it.sync.google.syncedVersion ? 'google' : 'google-pending';   // Google 동기화로 휴대폰에 들어가는 일정
+    const h = lastExport()[it.id]; return !h ? 'never' : h.version === it.version ? 'same' : 'modified';
+  };
+  const isAndroid = () => MW.personal._forceAndroid || /Android/i.test(navigator.userAgent);
+  const onlineOk = () => /^https:$/.test(location.protocol) || /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+  /* 아직 휴대폰 캘린더에 넣지 않은 일정(오늘 이후 회차가 있는 것): 보낸 적 없음 + 보낸 뒤 수정됨 */
+  function pendingPhone() {
+    const t = C().today();
+    return live().filter(i => !blocked(i) && ['never', 'modified'].includes(exportState(i)) && !(i.type === 'task' && !(i.rule && i.rule.freq) && i.done) && C().expand(i, t, C().addDays(t, 400)).length)
+      .sort((a, b) => a.start.localeCompare(b.start));
+  }
+  const pendingCard = () => {
+    if (st.meta.deviceRole === 'admin-pc') return '';
+    const n = pendingPhone().length;
+    return n ? `<div class="notice info small ppend"><span>휴대폰 캘린더에 아직 넣지 않은 일정 <b class="pp-n">${n}</b>건</span> <button type="button" class="btn sm primary" data-sendall="1">한 번에 보내기</button></div>` : '';
+  };
+  function sendPending() { const l = pendingPhone(); if (!l.length) return MW.ui.toast('휴대폰 캘린더에 보낼 일정이 없습니다.'); exportFlow(l, `아직 휴대폰에 넣지 않은 일정 ${l.length}건`); }
+  async function recordExport(list, method, label, filename) {
+    const rec = { id: 'x_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), at: nowIso(), filename: filename || '', method, label, items: list.map(i => ({ id: i.id, version: i.version })) };
+    try { await MW.pdb.put('exports', rec); st.exports.push(rec); } catch (e) { MW.ui.toast('내보내기 이력을 저장하지 못했습니다: ' + e.message, true); }
+  }
   const blocked = it => it.origin === 'onenote' && !it.exportConfirmed;
   const EF = { from: '', to: '' };
   function vExport() {
     const t = C().today(); EF.from = EF.from || t; EF.to = EF.to || C().addDays(t, 30);
     const its = live().filter(i => C().expand(i, EF.from, EF.to).length).sort((a, b) => a.start.localeCompare(b.start));
-    const lab = { never: '<span class="chip">보낸 적 없음</span>', same: '<span class="chip c-ok">보냄</span>', modified: '<span class="chip c-warn">보낸 뒤 수정됨</span>' };
+    const lab = { never: '<span class="chip">보낸 적 없음</span>', same: '<span class="chip c-ok">보냄</span>', modified: '<span class="chip c-warn">보낸 뒤 수정됨</span>', google: '<span class="chip c-ok">Google 동기화됨</span>', 'google-pending': '<span class="chip c-warn">Google 동기화 대기</span>' };
     return `<div class="notice info small"><b>갤럭시 알림 받는 방법</b>
       <ol style="margin:6px 0 0;padding-left:20px"><li>아래에서 일정을 골라 「ICS 파일 만들기」를 누릅니다.</li><li>휴대폰에서 받은 <b>.ics 파일을 열고 삼성 캘린더를 선택</b>합니다.</li><li>저장할 캘린더로 <b>개인 Google 계정 캘린더</b>를 고르면 Google 캘린더에도 함께 저장됩니다(삼성 계정·내 휴대폰 캘린더에 저장하면 Google에는 가지 않습니다).</li><li>삼성 캘린더에서 일정과 알림 시간이 맞게 들어왔는지 확인합니다.</li></ol>
       파일을 만드는 것만으로는 휴대폰에 등록되지 않습니다. 기종·삼성 캘린더 버전에 따라 가져오기 방법이 다를 수 있어 <b>실기기 확인이 필요</b>합니다.</div>
       ${st.meta.deviceRole === 'admin-pc' ? '<div class="notice bad small">이 기기는 <b>행정 PC</b>로 설정되어 있습니다. 행정 PC에서 만든 파일을 개인 휴대폰으로 옮기는 것은 기관 보안정책에 따라 제한될 수 있습니다. 가능하면 휴대폰에서 직접 일정을 입력하고 내보내세요.</div>' : ''}
+      ${pendingCard()}
       <div class="toolbar"><label class="small">기간 <input type="date" id="ex-from" value="${EF.from}"> ~ <input type="date" id="ex-to" value="${EF.to}"></label><button class="btn" id="ex-all">이 기간 일정 모두 선택</button><button class="btn" id="ex-none">선택 해제</button></div>
       <div class="card"><ul class="list" id="ex-list">${its.map(i => `<li class="row" style="flex-wrap:nowrap;align-items:flex-start"><input type="checkbox" data-ex="${i.id}" ${blocked(i) ? 'disabled' : ''} style="flex:none;margin-top:4px" aria-label="${esc(i.title)} 선택">
         <div><b>${esc(MW.sec.show(i.title))}</b> ${lab[exportState(i)]} ${blocked(i) ? '<span class="chip c-bad">원노트 자료 · 내보내기 확인 전</span>' : ''}<div class="small muted">${esc(i.start)} ${esc(i.allDay ? '종일' : i.startTime)}${i.rule && i.rule.freq ? ' · 🔁 ' + esc(C().ruleText(i)) + ' (반복 규칙 전체가 들어감)' : ''} · 알림 ${(i.alarms || []).length}개</div></div></li>`).join('') || '<li class="muted">이 기간에 일정이 없습니다.</li>'}</ul>
@@ -196,8 +214,7 @@
         if (share) await navigator.share({ files: [new File([text], name, { type: 'text/calendar' })], title: 'MY WORKSPACE 개인 일정' });
         else download(name, text, 'text/calendar;charset=utf-8');
       } catch (e) { if (e && e.name === 'AbortError') return; return MW.ui.toast('파일을 보내지 못했습니다: ' + e.message, true); }
-      const rec = { id: 'x_' + Date.now().toString(36), at: nowIso(), filename: name, label, items: list.map(i => ({ id: i.id, version: i.version })) };
-      try { await MW.pdb.put('exports', rec); st.exports.push(rec); } catch (e) { MW.ui.toast('내보내기 이력을 저장하지 못했습니다: ' + e.message, true); }
+      await recordExport(list, share ? 'share' : 'ics', label, name);
       MW.ui.closeModal();
       MW.ui.toast(`ICS 파일(${list.length}건)을 만들었습니다. 휴대폰에서 파일을 열어 삼성 캘린더로 가져와야 일정과 알림이 등록됩니다.`);
       MW.app.refreshSoon(); if (location.hash.startsWith('#/cal')) render(document.getElementById('view'), { q: { v: S.v } });
@@ -282,7 +299,9 @@
         ${it.origin === 'onenote' ? `<label class="row notice small" style="font-weight:400"><input type="checkbox" id="pe-expok" ${it.exportConfirmed ? 'checked' : ''}> 업무 자료가 아닌 개인 일정임을 확인했고, 휴대폰용 파일로 내보내도 됩니다.</label>` : ''}
       </div>
       <div class="row" style="margin-top:14px"><button class="btn primary" id="pe-save">저장</button>${isNew ? '' : (occ ? '<button class="btn danger" id="pe-delone">이 회차만 삭제</button><button class="btn danger" id="pe-delall">반복 전체 삭제</button>' : '<button class="btn danger" id="pe-del">삭제</button>')}</div>
-      ${isNew ? '' : `<details class="mbox"><summary><b>휴대폰으로 보내기 · 공유</b> <span class="small muted">${h === 'never' ? '보낸 적 없음' : h === 'same' ? '보냄 ' + esc(MW.docs.fmt(hist.at)) : '보낸 뒤 수정됨 — 다시 보내기 필요'}</span></summary>
+      ${isNew ? '' : `<details class="mbox" id="pe-phone" ${['never', 'modified'].includes(h) && st.meta.deviceRole !== 'admin-pc' ? 'open' : ''}><summary><b>휴대폰으로 보내기 · 공유</b> <span class="small muted">${h === 'never' ? '보낸 적 없음' : h === 'same' ? '보냄 ' + esc(MW.docs.fmt(hist.at)) : h === 'google' ? 'Google 동기화됨' : h === 'google-pending' ? 'Google 동기화 대기(다음 동기화 때 반영)' : '보낸 뒤 수정됨 — 다시 보내기 필요'}</span></summary>
+        ${isAndroid() && st.meta.deviceRole !== 'admin-pc' ? `<div style="margin-top:8px"><button class="btn primary" id="pe-intent">삼성 캘린더에 바로 추가</button>
+          <p class="small muted" style="margin:6px 0 0">캘린더 앱의 새 일정 화면이 내용이 채워진 채로 열립니다. 저장할 캘린더(Google 계정)를 확인하고 저장을 누르세요.${C().intentLimits(it).length ? ' <b>넘어가지 않는 내용:</b> ' + esc(C().intentLimits(it).join(', ')) + ' — 모두 넘기려면 아래 ICS 파일을 쓰세요.' : ''}</p></div>` : '<p class="small muted" style="margin:8px 0 0">「삼성 캘린더에 바로 추가」 버튼은 안드로이드 휴대폰에서 보입니다.</p>'}
         <div class="row" style="margin-top:8px"><button class="btn" id="pe-ics">이 일정 ICS 파일 만들기</button><button class="btn" id="pe-rem">리마인더로 공유·복사</button></div>
         <p class="small muted">리마인더: 삼성 리마인더는 공개 연동 기능이 없어 직접 등록하지 않습니다. 휴대폰에서 「공유」 → Reminder를 고르거나 복사해서 붙여 넣으세요(실기기 확인 필요).</p></details>
         <details class="mbox"><summary><b>변경 이력</b></summary><div id="pe-hist" class="small muted">불러오는 중…</div></details>
@@ -404,13 +423,21 @@
     if ($('pe-delall')) $('pe-delall').onclick = () => { if (confirm('반복 일정 전체를 휴지통으로 옮깁니다. 계속할까요?')) del('all'); };
     if ($('pe-delone')) $('pe-delone').onclick = () => del('one');
     if ($('pe-ics')) $('pe-ics').onclick = () => exportFlow([st.items.find(x => x.id === it.id)], '일정 1건');
+    if ($('pe-intent')) $('pe-intent').onclick = async () => {
+      const cur = st.items.find(x => x.id === it.id); if (!cur) return;
+      if (blocked(cur)) return MW.ui.toast('원노트에서 가져온 일정은 「내보내기 확인」을 체크한 뒤에 보낼 수 있습니다.', true);
+      const url = C().intentUrl(cur);
+      await recordExport([cur], 'intent', '바로 추가 1건');
+      MW.ui.closeModal(); MW.ui.toast('캘린더 앱에서 저장을 눌러야 등록됩니다.');
+      MW.personal._lastIntent = url; if (!MW.personal._noNavigate) location.href = url;
+    };
     if ($('pe-rem')) $('pe-rem').onclick = () => shareReminder(occ || C().expand(it, it.start, it.end || it.start)[0] || it);
     if ($('pe-hist')) MW.pdb.all('history').then(hs => {
       hs = hs.filter(x => x.itemId === it.id).sort((a, b) => b.version - a.version);
       $('pe-hist').innerHTML = hs.length ? `<ul class="list">${hs.map(x => `<li>버전 ${x.version} · ${esc(MW.docs.fmt(x.at))}까지 · ${esc(MW.sec.show(x.snapshot.title))} ${esc(x.snapshot.start)} ${esc(x.snapshot.allDay ? '종일' : x.snapshot.startTime)} <button class="btn sm" data-hrest="${x.id}">이 상태로 되돌리기</button></li>`).join('')}</ul>` : '변경 이력이 없습니다.';
       $('pe-hist').onclick = async e => { const id = e.target.dataset.hrest; if (!id) return; const x = hs.find(y => y.id === id); const back = Object.assign(clone(x.snapshot), { deletedAt: null }); try { await save(back); MW.ui.closeModal(); MW.ui.toast(`버전 ${x.version} 상태로 되돌렸습니다.`); if (location.hash.startsWith('#/cal')) render(document.getElementById('view'), { q: { v: S.v } }); } catch (er) { MW.ui.toast('되돌리지 못했습니다: ' + er.message, true); } };
     }).catch(() => { $('pe-hist').textContent = '변경 이력을 불러오지 못했습니다.'; });
-    setTimeout(() => { if (isNew) $('pe-title').focus(); }, 30);
+    setTimeout(() => { const el = $('pe-title'); if (isNew && el) el.focus(); }, 30);
   }
 
   /* ---------- 완료 표시 (회차별) ---------- */
@@ -444,6 +471,7 @@
       if (nv) { const k = +nv.dataset.nav; S.d = k === 0 ? C().today() : S.v === 'month' ? C().addMonths(S.d.slice(0, 8) + '01', k) : C().addDays(S.d, (S.v === 'week' ? 7 : 1) * k); S.sel = k === 0 ? C().today() : null; return re(); }
       const oc = t.closest('[data-occ]'); if (oc) { e.stopPropagation(); const o = findOcc(oc.dataset.occ); if (o) openEditor({ id: o.id, orig: o.recurring ? o.orig : null }); return; }
       if (t.dataset.done) return;
+      if (t.closest('[data-sendall]')) return sendPending();
       const ad = t.closest('[data-addon]'); if (ad) return openEditor({ type: 'event', date: ad.dataset.addon });
       const gd = t.closest('[data-goday]'); if (gd) { S.v = 'day'; S.d = gd.dataset.goday; location.hash = '#/cal?v=day&d=' + S.d; return; }
       const cell = t.closest('.mcell'); if (cell) { S.sel = cell.dataset.day; const html = vMonth(); $('pc-body').innerHTML = html; return; }
@@ -474,13 +502,14 @@
     if (!st.loaded) return '<p class="muted small">개인 일정 저장소를 열지 못했습니다.</p>';
     const t = C().today();
     if (kind === 'pcal') { const os = C().occurrences(st.items, t, t).filter(o => o.type === 'event'), soon = C().occurrences(st.items, C().addDays(t, 1), C().addDays(t, 7)).filter(o => o.type === 'event').slice(0, 4);
-      return `<div data-pw="1">${occList(os, '오늘 개인 일정이 없습니다.')}${soon.length ? `<p class="small muted" style="margin:8px 0 0">다가오는 일정</p>${occList(soon, '', { date: 1 })}` : ''}</div><div class="row"><button class="btn sm" data-pnew="event">＋ 일정</button><a class="btn sm" href="#/cal?v=month">달력</a></div>`; }
+      return `<div data-pw="1">${pendingCard()}${occList(os, '오늘 개인 일정이 없습니다.')}${soon.length ? `<p class="small muted" style="margin:8px 0 0">다가오는 일정</p>${occList(soon, '', { date: 1 })}` : ''}</div><div class="row"><button class="btn sm" data-pnew="event">＋ 일정</button><a class="btn sm" href="#/cal?v=month">달력</a></div>`; }
     return `<div data-pw="1">${occList(tasksDue(t), '오늘까지 할 일이 없습니다.', { date: 1 })}</div><div class="row"><button class="btn sm" data-pnew="task">＋ 할 일</button><a class="btn sm" href="#/cal?v=tasks">할 일 전체</a></div>`;
   }
   async function widgetClick(e) {
     const t = e.target, oc = t.closest('[data-occ]');
     if (oc && oc.closest('[data-pw]')) { const o = findOcc(oc.dataset.occ); if (o) openEditor({ id: o.id, orig: o.recurring ? o.orig : null }); return true; }
     if (t.dataset.pnew) { openEditor({ type: t.dataset.pnew }); return true; }
+    if (t.closest('[data-sendall]')) { sendPending(); return true; }
     return false;
   }
   async function widgetChange(e) { if (e.target.dataset.done && e.target.closest('[data-pw]')) { await toggleDone(e.target.dataset.done, e.target.checked); return true; } return false; }
@@ -497,7 +526,11 @@
         <label for="ps-only">업무 메뉴</label><label class="row" style="font-weight:400"><input type="checkbox" id="ps-only" ${MW.state.settings.personalOnly ? 'checked' : ''}> 개인 일정 전용으로 쓰기(업무 메뉴 숨김 · 휴대폰용)</label></div>
       <div class="row" style="margin-top:10px"><button class="btn primary" id="ps-export">개인 일정 백업 내보내기</button><label class="btn" for="ps-restore" style="display:inline-flex;align-items:center">개인 일정 백업에서 복원</label><input id="ps-restore" type="file" accept=".json" hidden><button class="btn danger" id="ps-wipe">개인 일정 모두 삭제</button></div>
       <p class="small muted" id="ps-counts">일정·할 일 ${n}건 · 휴지통 ${st.items.length - n}건 · 내보내기 이력 ${st.exports.length}건</p>
-      <details><summary class="small">Google 캘린더 · 자동화(n8n) 연결 상태</summary><p class="small muted">Google 캘린더 동기화: <b>구현 안 됨(연결하지 않음)</b>. 개인 기기에서 승인된 환경이 준비되면 별도 단계에서 진행합니다.<br>자동화 이벤트: 일정 변경을 이 기기 안에 기록만 하며 어디로도 전송하지 않습니다(<span id="ps-outbox">…</span>건 대기).</p></details></section>`;
+      <h3 style="margin-top:14px">Google 캘린더 동기화</h3>
+      <p class="small muted" id="ps-gsync">${!st.gsync || !st.gsync.clientId ? '설정 안 됨.' : `마지막 동기화: ${st.gsync.lastSync ? esc(MW.docs.fmt(st.gsync.lastSync)) : '아직 없음'}${(st.gsync.conflicts || []).length ? ` · <b>확인할 충돌 ${st.gsync.conflicts.length}건</b>` : ''}`}
+        ${st.meta.deviceRole === 'admin-pc' ? ' 행정 PC에서는 사용하지 않습니다.' : onlineOk() ? '' : ' 휴대폰·개인 PC에서 https 주소로 열었을 때만 사용할 수 있습니다.'}</p>
+      ${st.meta.deviceRole === 'personal' && onlineOk() ? '<a class="btn" href="sync.html">Google 캘린더 동기화 열기</a>' : ''}
+      <details><summary class="small">자동화(n8n) 연결 상태</summary><p class="small muted">자동화 이벤트: 일정 변경을 이 기기 안에 기록만 하며 어디로도 전송하지 않습니다(<span id="ps-outbox">…</span>건 대기).</p></details></section>`;
   }
   function bindSettings(rerender) {
     const $ = id => document.getElementById(id); if (!$('pc-settings')) return;
@@ -520,5 +553,5 @@
     };
     $('ps-wipe').onclick = async () => { if (!confirm('이 기기의 개인 일정·이력을 모두 삭제합니다. 되돌릴 수 없습니다. 계속할까요?')) return; try { await MW.pdb.wipe(); await load(); MW.ui.toast('개인 일정을 모두 삭제했습니다.'); rerender(); } catch (e) { MW.ui.toast('삭제 실패: ' + e.message, true); } };
   }
-  MW.personal = { load, save, render, openEditor, exportFlow, widget, widgetClick, widgetChange, searchItems, settingsCard, bindSettings, toggleDone, candidates, CATS, COLORS, state: st };
+  MW.personal = { load, save, render, openEditor, exportFlow, pendingPhone, sendPending, widget, widgetClick, widgetChange, searchItems, settingsCard, bindSettings, toggleDone, candidates, CATS, COLORS, state: st };
 })();
